@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""--------------------------------------------------------------------
+COPYRIGHT 2021 PickNik Robotics
+
+Author: John Stechschulte, john@picknik.ai
+
+Borrowed heavily from Boston Cleek:
+  https://github.com/bostoncleek/intera_sdk/blob/noetic-devel/intera_interface/scripts/gripper_action_server.py
+--------------------------------------------------------------------"""
+
+import rospy
+import actionlib
+from control_msgs.msg import (
+    GripperCommandAction,
+    GripperCommandFeedback,
+    GripperCommandResult,
+)
+from robotiq_85_msgs.msg import (
+    GripperStat,
+    GripperCmd,
+)
+
+EPSILON = 1e-3
+
+class GripperActionServer:
+    def __init__(self):
+        self._ns="/gripper"
+        self._server = actionlib.SimpleActionServer(
+                self._ns + "/gripper_action",
+                GripperCommandAction,
+                execute_cb=self._on_gripper_action,
+                auto_start=False)
+        self._action_name = rospy.get_name()
+        self._server.start()
+
+        self._feedback = GripperCommandFeedback()
+        self._result = GripperCommandResult()
+
+        self._max_pos = 0.85
+        self._min_pos = 0.0
+        self._max_vel = 1.
+        self._min_vel = 0.
+        self._timeout = 2.5
+        self._frequency = 20
+
+        self._gripper_stat = None
+        rospy.Subscriber("/gripper/stat", GripperStat, self._update_gripper_stat, queue_size=10)
+        self._gripper_pub = rospy.Publisher('/gripper/cmd', GripperCmd, queue_size=10)
+
+    def _update_gripper_stat(self, stat):
+        self._gripper_stat = stat
+
+    def _update_feedback(self, position):
+        if self._gripper_stat is None: return
+        self._feedback.position = self._gripper_stat.position
+        self._feedback.stalled = (self._gripper_stat.fault_status > 0) or (not self._gripper_stat.is_moving and
+                abs(self._gripper_stat.position - self._gripper_stat.requested_position) > EPSILON)
+        self._feedback.reached_goal = (abs(self._gripper_stat.position - self._gripper_stat.requested_position) <= EPSILON)
+        self._result = self._feedback
+        self._server.publish_feedback(self._feedback)
+
+    def _on_gripper_action(self, goal):
+        position = max(min(goal.command.position, self._max_pos), self._min_pos)
+
+        self._update_feedback(position)
+        gripper_cmd = GripperCmd()
+        gripper_cmd.position = position
+        gripper_cmd.speed = 0.02
+        gripper_cmd.force = 2.
+        self._gripper_pub.publish(gripper_cmd)
+
+        control_rate = rospy.Rate(self._frequency)
+        iters = int(self._frequency * self._timeout)
+        for _ in range(iters):
+            if self._server.is_preempt_requested():
+                self._server.set_preempted(self._result)
+                return
+            self._gripper_pub.publish(gripper_cmd)
+            control_rate.sleep()
+            self._update_feedback(position)
+
+            if self._result.reached_goal:
+                break
+
+        self._update_feedback(position)
+        self._server.publish_feedback(self._feedback)
+        if self._result.reached_goal:
+            self._server.set_succeeded(self._result)
+        else:
+            self._server.set_aborted(self._result)
+
+def main():
+    rospy.init_node('robotiq_85_action_server')
+    gripper_action_server = GripperActionServer()
+    rospy.spin()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass
