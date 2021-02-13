@@ -36,7 +36,7 @@ class GripperActionServer:
         self._feedback = GripperCommandFeedback()
         self._result = GripperCommandResult()
 
-        self._max_pos = 0.85
+        self._max_pos = 0.085
         self._min_pos = 0.0
         self._max_vel = 1.
         self._min_vel = 0.
@@ -52,7 +52,7 @@ class GripperActionServer:
 
     def _update_feedback(self, position):
         if self._gripper_stat is None: return
-        self._feedback.position = self._gripper_stat.position
+        self._feedback.position = self._gripper_position_to_joint_angle(self._gripper_stat.position)
         self._feedback.stalled = (self._gripper_stat.fault_status > 0) or (not self._gripper_stat.is_moving and
                 abs(self._gripper_stat.position - self._gripper_stat.requested_position) > EPSILON)
         self._feedback.reached_goal = (abs(self._gripper_stat.position - self._gripper_stat.requested_position) <= EPSILON)
@@ -60,7 +60,7 @@ class GripperActionServer:
         self._server.publish_feedback(self._feedback)
 
     def _on_gripper_action(self, goal):
-        position = max(min(goal.command.position, self._max_pos), self._min_pos)
+        position = max(min(self._joint_angle_to_gripper_position(goal.command.position), self._max_pos), self._min_pos)
 
         self._update_feedback(position)
         gripper_cmd = GripperCmd()
@@ -88,6 +88,16 @@ class GripperActionServer:
             self._server.set_succeeded(self._result)
         else:
             self._server.set_aborted(self._result)
+
+    def _joint_angle_to_gripper_position(self, angle):
+        angle = max(0, angle)
+        position = 0.085 * (1 - angle / 0.7894)
+        return max(0, position)
+
+    def _gripper_position_to_joint_angle(self, position):
+        position = max(0, position)
+        angle = 0.7894 * (1 - position / 0.085)
+        return max(0, angle)
 
 def main():
     rospy.init_node('robotiq_85_action_server')
